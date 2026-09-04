@@ -162,6 +162,61 @@ property is called being **durable**, and it is why a crashed server does not me
 
 ![A run that survived an API restart](docs/dashboard-durable.jpg)
 
+## AI vs me
+
+I built Stages 0–5 by hand first, then asked an AI to build the same system from a prompt I
+wrote from memory. Its code is quarantined in [`ai-version/`](ai-version/); the prompts are in
+[`ai-version/PROMPT.md`](ai-version/PROMPT.md). I ran my own Stage 2 and Stage 3 checkpoints
+against it.
+
+**Stage 2 passed.** `POST /reports` answered `202` in 39 ms and the poll flipped to `done`
+about ten seconds later. The core pattern was right on the first try.
+
+**Stage 3 failed, three ways.**
+
+| Check | Mine | AI v1 |
+| --- | --- | --- |
+| `POST /reports` with `{}` | `400` | **`422`** |
+| `POST /reports` with `{"topic":"   "}` | `400`, no job | **`202`, job created** |
+| A report whose job ran out of retries | `failed` | **`pending`, forever** |
+
+1. **`422`, not `400`.** The AI declared `topic: str` as a required Pydantic field, so FastAPI's
+   own validation rejects the request *before* the handler runs and its `raise
+   HTTPException(400)` is dead code. The checkpoint asks for `400` specifically. I understand
+   why it happened — `topic: str` is the obvious way to say "required" — but it is wrong here,
+   and it is the kind of wrong that a passing-looking handler hides.
+2. **A blank topic is accepted.** `if not request.topic` is false for `"   "`, so a whitespace
+   topic gets a `202` and a real background job. No trimming anywhere.
+3. **The `failed` count can never be non-zero.** The AI wrote the cron to count `pending`,
+   `done` and `failed` — because my prompt asked for those three words — but nothing in its
+   code ever writes `failed`. There is no `on_failure` handler, so when the run exhausts its
+   retries the dashboard says `Failed` and the API never finds out. I watched its heartbeat
+   print `Reports: 5 pending, 1 done, 0 failed` while the dashboard showed two `Failed` runs of
+   the same function. A counter that is structurally always zero is worse than no counter.
+
+**What the AI did better.** Its heartbeat is three plain list comprehensions where mine is an
+accumulator loop; the comprehensions are easier to read at a glance and I would take them. And
+keeping everything in one file is genuinely closer to the spirit of an under-120-line
+assignment than my four-module split — a stranger reads it top to bottom in one sitting. Both
+are things I understand and could defend; neither is a correctness win.
+
+**What my prompt forgot to specify — and what the AI silently decided for me.** I never said
+which status code a *missing* field should produce, so it inherited FastAPI's. I never said a
+report has to be able to *reach* the failed state, only that something should count them. I
+never named the app id, the serve path, or the port, so it invented `ai-report-api` and I had
+to register it by hand before any job would run. I never mentioned idempotency or a
+concurrency limit, so it has neither. The pattern is consistent: **everything I did not say,
+it decided — and the decisions it made silently were exactly the ones I had spent the previous
+five stages learning were load-bearing.**
+
+**The rematch.** Prompt v2 adds three sentences: blank-or-missing topic must return exactly
+`400`; a report must actually reach `failed` when retries run out; and the app id, serve path
+and port are named. `main_v2.py` fixes all three — `400` for both bad inputs, an `on_failure`
+handler that flips the report to `failed` (I watched it flip after the third attempt), and
+`ctx.logger` instead of the root logger so the heartbeat line is attached to its run in the
+dashboard. Nineteen lines changed; the difference between a version that fails the checkpoint
+and one that passes was three sentences of specification, not a better model.
+
 ## Notes
 
 Reports live in an in-memory dict, so they are gone on restart. That is deliberate for this
