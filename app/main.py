@@ -13,7 +13,7 @@ app = FastAPI(title="Report API")
 
 
 class ReportRequest(BaseModel):
-    topic: str
+    topic: str = ""
 
 
 @app.get("/health")
@@ -23,13 +23,17 @@ def health() -> dict[str, str]:
 
 @app.post("/reports", status_code=status.HTTP_202_ACCEPTED)
 async def create_report(body: ReportRequest) -> dict[str, str]:
+    topic = body.topic.strip()
+    if not topic:
+        raise HTTPException(status_code=400, detail="topic is required")
+
     report_id = uuid.uuid4().hex[:8]
-    reports[report_id] = {"id": report_id, "topic": body.topic, "status": "pending"}
+    reports[report_id] = {"id": report_id, "topic": topic, "status": "pending"}
 
     await inngest_client.send(
         inngest.Event(
             name="report/requested",
-            data={"id": report_id, "topic": body.topic},
+            data={"id": report_id, "topic": topic},
         )
     )
     return {"id": report_id, "status": "pending"}
