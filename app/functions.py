@@ -26,6 +26,7 @@ async def mark_failed(ctx: inngest.Context) -> None:
 
 
 @inngest_client.create_function(
+    concurrency=[inngest.Concurrency(limit=2)],
     fn_id="make-report",
     on_failure=mark_failed,
     retries=2,
@@ -34,6 +35,16 @@ async def mark_failed(ctx: inngest.Context) -> None:
 async def make_report(ctx: inngest.Context) -> dict[str, str]:
     report_id = str(ctx.event.data["id"])
     topic = str(ctx.event.data["topic"])
+
+    async def find_existing() -> dict[str, str] | None:
+        existing = reports.get(report_id)
+        if existing is not None and existing["status"] == "done":
+            return {"id": report_id, "result": existing["result"]}
+        return None
+
+    already_built = await ctx.step.run("skip-if-already-built", find_existing)
+    if already_built is not None:
+        return already_built
 
     await ctx.step.sleep("do-the-slow-work", 8_000)
 

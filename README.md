@@ -36,7 +36,7 @@ Requires Python 3.10+ and Node.js (only to run the Inngest CLI). No account, no 
 | Function | Trigger | What it does |
 | --- | --- | --- |
 | `say-hello` | event `test/hello` | Sleeps 5s, returns a greeting. The "is it wired up" function. |
-| `make-report` | event `report/requested` | Three steps: `step.sleep("do-the-slow-work", 8s)` → `step.run("build-report", ...)` saves the result as `done` → `step.run("send-the-email", ...)` writes `outbox/<id>.txt`. `retries=2`; topic `"fail"` raises, and an `on_failure` handler marks the report `failed`. |
+| `make-report` | event `report/requested` | Four steps: `step.sleep("do-the-slow-work", 8s)` → `step.run("build-report", ...)` saves the result as `done` → `step.run("send-the-email", ...)` writes `outbox/<id>.txt`. `retries=2`; topic `"fail"` raises, and an `on_failure` handler marks the report `failed`. |
 | `heartbeat` | cron `* * * * *` | Logs one line: how many reports are pending, done, failed. |
 | `cleanup` | cron `*/5 * * * *` | Every 5 minutes, deletes `done` reports older than 10 minutes. Cron's most common real job is taking out the trash. |
 
@@ -103,6 +103,50 @@ The `"fail"` topic, retried three times with growing backoff before the run ends
 - **A cleanup cron** — `*/5 * * * *` means every 5 minutes; it deletes `done` reports older
   than 10 minutes.
 - **The restart experiment** — see below.
+
+## Stretch: idempotency
+
+Send the same `report/requested` event twice and the report is built only **once**. The first
+step checks whether that id is already `done` and, if so, returns the saved result and stops:
+
+```
+$ curl -X POST http://localhost:8288/e/dev_key -H "Content-Type: application/json"     -d '{"name":"report/requested","data":{"id":"73c28fb1","topic":"idem2"}}'
+
+duplicate run: Completed | started 00:58:05.439Z | ended 00:58:05.687Z
+output: {"id": "73c28fb1", "result": "Report on idem2: 3 findings, 2 recommendations."}
+outbox mtime before=1788483471 after=1788483471   # unchanged
+```
+
+248 milliseconds instead of 8 seconds, and no second outbox file.
+
+The check lives inside a `step.run`, not in plain function-body code. A step function is
+re-entered from the top on every step, so a bare `if already done: return` would fire on the
+function's *own* replay and skip the remaining steps. Wrapping it in a step memoizes the
+answer from the first invocation.
+
+**Why jobs must survive running twice:** a queue can only promise *at-least-once* delivery — a
+network blip between "work finished" and "acknowledged" means the same event gets redelivered.
+The job tool cannot make that impossible, so the job has to make it harmless.
+
+## Stretch: concurrency limit
+
+`concurrency=[inngest.Concurrency(limit=2)]` caps `make-report` at two runs at once.
+
+Enqueue five and, with the assignment's `step.sleep`, all five still finish together — a run
+that is *sleeping* is not running, so it releases its slot. Swapping the sleep for eight
+seconds of blocking work inside a `step.run` makes the limit visible immediately: the five
+reports finished in three waves of 2, 2, 1, nine seconds apart.
+
+```
+q2 done 01:59:23    q3 done 01:59:24     # wave 1
+q1 done 01:59:32    q5 done 01:59:32     # wave 2
+q4 done 01:59:41                         # wave 3
+```
+
+**When would you want a queue to be slow?** When the thing on the other end is fragile or
+metered — a third-party API with a rate limit, a database that falls over past N connections,
+or a paid model endpoint. A queue that refuses to go faster turns a burst that would take the
+dependency down into a line that merely takes longer.
 
 ## The restart experiment — durability
 
