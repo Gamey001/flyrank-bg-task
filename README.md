@@ -36,7 +36,7 @@ Requires Python 3.10+ and Node.js (only to run the Inngest CLI). No account, no 
 | Function | Trigger | What it does |
 | --- | --- | --- |
 | `say-hello` | event `test/hello` | Sleeps 5s, returns a greeting. The "is it wired up" function. |
-| `make-report` | event `report/requested` | Four steps: `step.sleep("do-the-slow-work", 8s)` → `step.run("build-report", ...)` saves the result as `done` → `step.run("send-the-email", ...)` writes `outbox/<id>.txt`. `retries=2`; topic `"fail"` raises, and an `on_failure` handler marks the report `failed`. |
+| `make-report` | event `report/requested` | Four steps: `step.run("skip-if-already-built", ...)` returns early for a duplicate event → `step.sleep("do-the-slow-work", 8s)` → `step.run("build-report", ...)` saves the result as `done` → `step.run("send-the-email", ...)` writes `outbox/<id>.txt`. `retries=2` and `concurrency=2`; topic `"fail"` raises, and an `on_failure` handler marks the report `failed`. |
 | `heartbeat` | cron `* * * * *` | Logs one line: how many reports are pending, done, failed. |
 | `cleanup` | cron `*/5 * * * *` | Every 5 minutes, deletes `done` reports older than 10 minutes. Cron's most common real job is taking out the trash. |
 
