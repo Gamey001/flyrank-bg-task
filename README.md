@@ -27,6 +27,7 @@ Requires Python 3.10+ and Node.js (only to run the Inngest CLI). No account, no 
 | --- | --- | --- |
 | `GET` | `/health` | `{"status": "ok"}` |
 | `POST` | `/reports` | Body `{"topic": "cats"}` → `202` + `{"id", "status": "pending"}`. Missing/blank topic → `400`, no event sent. |
+| `GET` | `/reports` | Every report and its status — the control panel. |
 | `GET` | `/reports/{id}` | The saved report: `pending` first, then `done` + `result`. Unknown id → `404`. |
 | `POST`/`PUT` | `/api/inngest` | Where the Dev Server finds and runs the functions. |
 
@@ -35,8 +36,9 @@ Requires Python 3.10+ and Node.js (only to run the Inngest CLI). No account, no 
 | Function | Trigger | What it does |
 | --- | --- | --- |
 | `say-hello` | event `test/hello` | Sleeps 5s, returns a greeting. The "is it wired up" function. |
-| `make-report` | event `report/requested` | `step.sleep("do-the-slow-work", 8s)` → `step.run("build-report", ...)` saves the result as `done`. `retries=2`; topic `"fail"` raises, and an `on_failure` handler marks the report `failed`. |
+| `make-report` | event `report/requested` | Three steps: `step.sleep("do-the-slow-work", 8s)` → `step.run("build-report", ...)` saves the result as `done` → `step.run("send-the-email", ...)` writes `outbox/<id>.txt`. `retries=2`; topic `"fail"` raises, and an `on_failure` handler marks the report `failed`. |
 | `heartbeat` | cron `* * * * *` | Logs one line: how many reports are pending, done, failed. |
+| `cleanup` | cron `*/5 * * * *` | Every 5 minutes, deletes `done` reports older than 10 minutes. Cron's most common real job is taking out the trash. |
 
 ## Proof: 202 now, result later
 
@@ -92,6 +94,29 @@ The `"fail"` topic, retried three times with growing backoff before the run ends
 
 > The screenshots were taken with the Dev Server on port 8299 because 8288 was in use on that
 > machine; the default `npx inngest-cli@latest dev` command uses 8288.
+
+## Extras
+
+- **`GET /reports`** — the whole map at once.
+- **The "email"** — `make-report` also writes `outbox/<id>.txt`, a stand-in for sending mail
+  from a job, which is where this pattern lives in real products.
+- **A cleanup cron** — `*/5 * * * *` means every 5 minutes; it deletes `done` reports older
+  than 10 minutes.
+- **The restart experiment** — see below.
+
+## The restart experiment — durability
+
+Start a report, then kill the API (`Ctrl-C`) while the job is inside its 8-second sleep, and
+start it again three seconds later.
+
+The job did not care. Inngest, not the API process, owns the run: it had already recorded that
+`do-the-slow-work` was sleeping, so when the sleep expired it called the freshly restarted
+server to run the remaining steps. `build-report` and `send-the-email` executed once, the
+outbox file was written, and the run ended `Completed` — 8.406s end to end, as if nothing had
+happened. Steps that finish are never re-run; only the unfinished remainder is resumed. That
+property is called being **durable**, and it is why a crashed server does not mean a lost job.
+
+![A run that survived an API restart](docs/dashboard-durable.jpg)
 
 ## Notes
 

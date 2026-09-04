@@ -1,7 +1,12 @@
+import time
+from pathlib import Path
+
 import inngest
 
 from app.client import inngest_client
 from app.store import reports
+
+OUTBOX = Path("outbox")
 
 
 @inngest_client.create_function(
@@ -42,10 +47,20 @@ async def make_report(ctx: inngest.Context) -> dict[str, str]:
             "topic": topic,
             "status": "done",
             "result": result,
+            "done_at": time.time(),
         }
         return {"id": report_id, "result": result}
 
-    return await ctx.step.run("build-report", build_report)
+    built = await ctx.step.run("build-report", build_report)
+
+    async def deliver() -> str:
+        OUTBOX.mkdir(exist_ok=True)
+        path = OUTBOX / f"{report_id}.txt"
+        path.write_text(f"Subject: your report on {topic}\n\n{built['result']}\n")
+        return str(path)
+
+    await ctx.step.run("send-the-email", deliver)
+    return built
 
 
 @inngest_client.create_function(
@@ -62,4 +77,23 @@ async def heartbeat(ctx: inngest.Context) -> str:
     return line
 
 
-functions = [say_hello, make_report, heartbeat]
+@inngest_client.create_function(
+    fn_id="cleanup",
+    trigger=inngest.TriggerCron(cron="*/5 * * * *"),
+)
+async def cleanup(ctx: inngest.Context) -> str:
+    cutoff = time.time() - 600
+    stale = [
+        report_id
+        for report_id, report in reports.items()
+        if report["status"] == "done" and report.get("done_at", 0) < cutoff
+    ]
+    for report_id in stale:
+        del reports[report_id]
+
+    line = f"cleanup: removed {len(stale)} done reports older than 10 minutes"
+    ctx.logger.info(line)
+    return line
+
+
+functions = [say_hello, make_report, heartbeat, cleanup]

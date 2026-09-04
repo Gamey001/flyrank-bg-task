@@ -39,6 +39,11 @@ async def create_report(body: ReportRequest) -> dict[str, str]:
     return {"id": report_id, "status": "pending"}
 
 
+@app.get("/reports")
+def list_reports() -> list[dict]:
+    return list(reports.values())
+
+
 @app.get("/reports/{report_id}")
 def get_report(report_id: str) -> dict:
     report = reports.get(report_id)
